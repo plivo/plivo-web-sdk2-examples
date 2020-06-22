@@ -10,6 +10,8 @@ var outputVolumeBar = document.getElementById('output-volume');
 var inputVolumeBar = document.getElementById('input-volume');
 var volumeIndicators = document.getElementById('volume-indicators');
 volumeIndicators.style.display = 'none';
+var isJWTLogin = false;
+
 
 String.prototype.calltimer = function () {
     var sec_num = parseInt(this, 10);
@@ -139,6 +141,9 @@ function onLogin(){
 }
 function onLoginFailed(reason){
 	$('#phonestatus').html('login failed');
+	if(isJWTLogin){
+		$('#sipUserName').html('Login failed with JWT token');
+	}
 	console.info('onLoginFailed ',reason);
 	if(Object.prototype.toString.call(reason) == "[object Object]"){
 		reason = JSON.stringify(reason);
@@ -146,6 +151,7 @@ function onLoginFailed(reason){
 	customAlert('Login failure :',reason);
 	$('.loader').remove()	
 }
+
 function onLogout(){
 	console.info('onLogout');
         $('#phonestatus').html('Offline');
@@ -208,7 +214,7 @@ function onCallAnswered(callInfo){
 	// record calls if enabled
 	recAudioFun(pcObj);
 
-	volumeIndicators.style.display = 'block';
+	
 }
 function onCallTerminated(evt, callInfo){
 	$('#callstatus').html('Call Ended');
@@ -229,7 +235,6 @@ function onCallTerminated(evt, callInfo){
 }
 function onCallFailed(reason, callInfo){
   if (callInfo) {
-    console.log(JSON.stringify(callInfo));
     console.info(`onCallFailed ${reason} ${callInfo.callUUID} ${callInfo.direction}`);
   } else {
     console.info(`onCallFailed ${reason}`);
@@ -342,6 +347,7 @@ function callOff(reason){
 	$('.hangup').hide();
 	$('#makecall').show();
 	resetMute();
+	volumeIndicators.style.display = 'none';
 	window.calltimer? clearInterval(window.calltimer) : false;
 	callStorage.dur = timer.toString().calltimer();
 	if(timer == "00:00:00" && callStorage.mode == "in"){
@@ -360,7 +366,7 @@ function callOff(reason){
 		audioGraph && audioGraph.stop();
 	},3000);
 	// stop connect tone
-	volumeIndicators.style.display = 'none';
+	
 }
 
 
@@ -618,23 +624,6 @@ function resetMute(){
 	$('.tmute').attr('class', 'fa tmute fa-microphone');
 }
 
-//jwt tokengen fun
-function tokenGenFunc(){
-	return function(cb){
-		$.get( "https://pxml.herokuapp.com/jwt", {userName:loginUser.value,min:10}, function(e) {
-			console.log( "received token");
-			cb(null,e);
-		})
-		.done(function(e) {
-			console.log( "done");
-		})
-		.fail(function(e) {
-			console.log("fail",e);
-			cb('failed',null);
-		});		
-	}
-}
-
 
 function volume(audioStats){
 	inputVolume = audioStats.inputVolume;
@@ -650,9 +639,85 @@ window.onbeforeunload = function () {
     // plivoWebSdk.client && plivoWebSdk.client.logout();
 };
 
+
+//Implementing the Token structure
+function implementToken(){
+	var JwtToken = function() {
+		accessToken.apply();
+	};
+	JwtToken.prototype = Object.create(accessToken.prototype);
+	JwtToken.prototype.constructor = JwtToken;
+	
+	//Define  the logic to fetch the JWT token
+	JwtToken.prototype.getAccessToken = async function() {
+		//get JWT Token
+		var tokenGenServerURI = "https://jwttokengen.herokuapp.com/fetchtoken";// template URL 
+		var requestBody = {
+			"username":$('#endpointName').val(),
+		}	
+		const response = await fetch(tokenGenServerURI, {
+						method: 'POST',
+						body: JSON.stringify(requestBody),
+			  			headers: {'Content-Type' : 'application/json'}
+		}).catch(function (err) {
+			console.error("Failed to fecth the JWT token ", err);
+			return null;
+		});
+		try{	
+			const myJson = await response.json();
+			return (myJson['token'])
+		}catch(error){
+			console.error(error);	
+			return(null);
+		}			
+	}
+	var jwtTokenObject = new JwtToken();
+	//pass the JWT token object to SDK loginJWT method.
+	loginJWTObject(jwtTokenObject);
+}
+
+function loginJWTObject(jwtTokenObject){
+	
+	if(jwtTokenObject!=null){
+		//start UI load spinner
+		kickStartNow();			
+
+		//Calling SDK loginJWT method
+		plivoWebSdk.client.loginWithAccessTokenGenerater(jwtTokenObject);
+		$('#sipUserName').html('Successfully logged in with JWT token');
+	}else{
+		console.error('JWT Object found null')
+	}
+}
+
+  
+  
+
+
 /*
 	Capture UI onclick triggers 
 */
+
+$("#randomEndpoint").click(function() {
+	if ($('#randomEndpoint').is(':checked')){
+		$("#endpointName").prop('disabled', true);
+	}else{
+		$("#endpointName").prop('disabled', false);
+	}
+});
+
+$("#jwtFlag").click(function() {
+	isJWTLogin = !isJWTLogin
+	var jwtLoginWindow = document.getElementById('jwtLoginWindow');
+	var loginWindow = document.getElementById('loginWindow');
+	if(isJWTLogin){
+		loginWindow.style.display = 'none';
+		jwtLoginWindow.style.display = 'block';
+	}else{
+		loginWindow.style.display = 'block';
+		jwtLoginWindow.style.display = 'none';
+	}
+});
 $('#inboundAccept').click(function(){
 	console.info('Call accept clicked');
 	plivoWebSdk.client.answer();
@@ -790,7 +855,12 @@ $( "#ignoreFeedback" ).click(function() {		// Reset the feedback dialog for next
 $('#clickLogin').click(function(e){
 	var userName = $('#loginUser').val();
 	var password = $('#loginPwd').val();
-	login(userName, password);
+	if(isJWTLogin){
+		implementToken()
+	}else{
+		login(userName, password);
+	}
+	
 	$('#uiLogout').click(function(e) {
 		plivoWebSdk.client && plivoWebSdk.client.logout();
 
@@ -1018,20 +1088,23 @@ function starFeedback(){
 // variables to declare 
 
 var plivoWebSdk; // this will be retrived from settings in UI
+var accessToken;
 
 function initPhone(username, password){
 	var options = refreshSettings();
 	plivoWebSdk = new window.Plivo(options);
-	
+
+	//initialise Token object
+	accessToken = plivoWebSdk.client.token;
+
 	plivoWebSdk.client.on('onWebrtcNotSupported', onWebrtcNotSupported); 
 	plivoWebSdk.client.on('onLogin', onLogin);
 	// plivoWebSdk.client.on('onTokenRegister',onLogin);
 	plivoWebSdk.client.on('onLogout', onLogout);
 	plivoWebSdk.client.on('onLoginFailed', onLoginFailed);
-	plivoWebSdk.client.on('onTokenEvent', onLoginFailed);
 	plivoWebSdk.client.on('onCallRemoteRinging', onCallRemoteRinging);
 	plivoWebSdk.client.on('onIncomingCallCanceled', onIncomingCallCanceled);
-  plivoWebSdk.client.on('onIncomingCallIgnored', onIncomingCallCanceled);
+    plivoWebSdk.client.on('onIncomingCallIgnored', onIncomingCallCanceled);
 	plivoWebSdk.client.on('onCallFailed', onCallFailed);
 	plivoWebSdk.client.on('onMediaConnected', onMediaConnected);
 	plivoWebSdk.client.on('onCallAnswered', onCallAnswered);
